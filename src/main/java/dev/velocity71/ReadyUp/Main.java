@@ -194,7 +194,7 @@ public class Main extends JavaPlugin implements Listener {
         WorldCreator c = new WorldCreator("queue_world");
         c.environment(World.Environment.NORMAL);
         c.type(WorldType.FLAT);
-        queueWorld = creator.createWorld();
+        queueWorld = c.createWorld();
     }
 
     private static class PlayerState {
