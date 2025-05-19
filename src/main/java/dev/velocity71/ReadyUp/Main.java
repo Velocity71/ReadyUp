@@ -28,8 +28,10 @@ public class Main extends JavaPlugin implements Listener {
 
     @Override
     public void onEnable() {
+        loadOrCreateQueueWorld();
+
         // Load and validate worlds
-        queueWorld = Bukkit.getWorld("queue");
+        //queueWorld = Bukkit.getWorld("queue");
         overworld = Bukkit.getWorld("world");
         nether = Bukkit.getWorld("world_the_nether");
         end = Bukkit.getWorld("world_the_end");
@@ -186,6 +188,13 @@ public class Main extends JavaPlugin implements Listener {
         p.teleport(queueWorld.getSpawnLocation());
         p.getInventory().clear();
         p.setGameMode(GameMode.ADVENTURE);
+    }
+
+    private void loadOrCreateQueueWorld() {
+        WorldCreator c = new WorldCreator("queue_world");
+        c.environment(World.Environment.NORMAL);
+        c.type(WorldType.FLAT);
+        queueWorld = creator.createWorld();
     }
 
     private static class PlayerState {
