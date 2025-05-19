@@ -1,9 +1,22 @@
 package dev.velocity71.ReadyUp;
 
-import java.util.*;
-import org.bukkit.*;
+import java.io.File;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.UUID;
+import org.bukkit.Bukkit;
+import org.bukkit.GameMode;
+import org.bukkit.Location;
+import org.bukkit.World;
+import org.bukkit.WorldCreator;
+import org.bukkit.WorldType;
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
-import org.bukkit.event.*;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.ItemStack;
@@ -11,31 +24,49 @@ import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
 
+/**
+ * Main class for the ReadyUp program.
+ */
 public class Main extends JavaPlugin implements Listener {
 
+    /** Acts as a queue until enough players populate the server. */
     private World queueWorld;
+
+    /** The overworld for the server. */
     private World overworld;
+
+    /** The nether for the server. */
     private World nether;
+
+    /** The end for the server */
     private World end;
 
-    private final int threshold = 2;
+    /** The minimum amount of players that must be in the server for players to be allowed into the main world. */
+    private final int MIN_PLAYERS = 2;
 
-    private final Set<UUID> waitingPlayers = new HashSet<>();
+    private final long MONITOR_INTERVAL = 100L; // 100 ticks = 5 seconds.
 
-    private final Map<UUID, PlayerState> savedPlayerData = new HashMap<>();
+    /** A set of players waiting in the queue. */
+    private final HashSet<UUID> waitingPlayers = new HashSet<UUID>();
 
+    /** Is the server active */
     private boolean isActive = false;
 
     @Override
     public void onEnable() {
+        // Find/create the 'players' folder, which holds all the saved data for the players.
+        File dataFolder = new File(getDataFolder(), "players");
+        if (!dataFolder.exists()) dataFolder.mkdirs();
+
         loadOrCreateQueueWorld();
 
         // Load and validate worlds
         //queueWorld = Bukkit.getWorld("queue");
         overworld = Bukkit.getWorld("world");
-        nether = Bukkit.getWorld("world_the_nether");
+        nether = Bukkit.getWorld("world_nether");
         end = Bukkit.getWorld("world_the_end");
 
+        // Check that all the proper worlds are found and loaded.
         if (queueWorld == null) {
             getLogger().severe("The queue world cannot be found.");
             return;
@@ -48,75 +79,100 @@ public class Main extends JavaPlugin implements Listener {
 
         if (nether == null) {
             getLogger().severe("The nether cannot be found.");
+            return;
         }
 
         if (end == null) {
             getLogger().severe("The end cannot be found.");
+            return;
         }
 
         // Register player join/quit events;
         getServer().getPluginManager().registerEvents(this, this);
 
-        // Register command
+        // Register command that forces players to join the overworld.
         getCommand("forcejoin").setExecutor((sender, cmd, label, args) -> {
-            checkAndEnteroverworld();
+            checkAndEnterOverworld();
             return true;
         });
 
         // Start repeating task to monitor player count and fallback if needed
         startAutoMonitor();
+        getLogger().info("Initiated automatic player count monitoring.");
     }
 
+    /**
+     * Every 100 ticks (5 seconds), check if the player count is below the threshold.
+     */
     private void startAutoMonitor() {
         new BukkitRunnable() {
             @Override
             public void run() {
-                if (isActive && Bukkit.getOnlinePlayers().size() < threshold) {
+                if (
+                    isActive && Bukkit.getOnlinePlayers().size() < MIN_PLAYERS
+                ) {
                     getLogger()
                         .info(
-                            "Player count below threshold - reverting all players to the queue world"
+                            "Player count below threshold - reverting all players to the queue world."
                         );
                     returnAllToQueueWorld();
                 }
             }
         }
-            .runTaskTimer(this, 100L, 100L); // 100 ticks = 5 seconds
+            .runTaskTimer(this, MONITOR_INTERVAL, MONITOR_INTERVAL);
     }
 
+    /**
+     * Add a player to the savedPlayerData map, send them to the queue world, and check if there are enough players to enter the main world.
+     */
     @EventHandler
     public void onJoin(PlayerJoinEvent e) {
         Player p = e.getPlayer();
+        getLogger().info("Player " + p.getUniqueId() + " has joined.");
 
-        // Save player state only if not yet tracked
-        if (!savedPlayerData.containsKey(p.getUniqueId())) {
+        File f = new File(
+            getDataFolder() + "/players",
+            p.getUniqueId() + ".yml"
+        );
+
+        if (!f.exists()) {
             savePlayerState(p);
         }
 
         // Place in waiting queue
         sendToQueueWorld(p);
 
-        // Check if enough players are ready
-        checkAndEnteroverworld();
+        // Check if enough players are present, and if so all enter the main world.
+        checkAndEnterOverworld();
     }
 
+    /**
+     * Remove a player from the queue list, and if there aren't enough players, pull everyone to the queue world.
+     */
     @EventHandler
     public void onQuit(PlayerQuitEvent e) {
-        UUID uuid = e.getPlayer().getUniqueId();
+        getLogger()
+            .info("Player " + e.getPlayer().getUniqueId() + " has left.");
 
         // Remove player from queue tracking
-        waitingPlayers.remove(uuid);
+        waitingPlayers.remove(e.getPlayer().getUniqueId());
 
         // If in main world, check if the playere count dropped to low
-        if (isActive && Bukkit.getOnlinePlayers().size() - 1 < threshold) {
-            getLogger().info("A player left. Below threshold.");
+        if (isActive && Bukkit.getOnlinePlayers().size() - 1 < MIN_PLAYERS) {
+            getLogger().info("A player left. Player count is below threshold.");
             returnAllToQueueWorld();
         }
     }
 
-    private void checkAndEnteroverworld() {
-        if (!isActive && waitingPlayers.size() >= threshold) {
+    /**
+     * Check if the player count is above the threshold, and if so push everyone to the main world.
+     */
+    private void checkAndEnterOverworld() {
+        // If the world is not active and the player list is at or above the threshold.
+        if (!isActive && waitingPlayers.size() >= MIN_PLAYERS) {
             isActive = true;
 
+            // Send everyone to the main world.
             for (UUID uuid : waitingPlayers) {
                 Player p = Bukkit.getPlayer(uuid);
                 if (p != null && p.isOnline()) {
@@ -126,10 +182,14 @@ public class Main extends JavaPlugin implements Listener {
             }
 
             waitingPlayers.clear();
-            getLogger().info("Threshold met. All players moved to main world.");
+            getLogger()
+                .info("MIN_PLAYERS met. All players moved to main world.");
         }
     }
 
+    /**
+     * Pull all players back to the queue world.
+     */
     private void returnAllToQueueWorld() {
         isActive = false;
 
@@ -144,113 +204,84 @@ public class Main extends JavaPlugin implements Listener {
                 40,
                 10
             );
+            getLogger().info("All players pulled to the queue world.");
         }
     }
 
+    /**
+     * Save the player's inventory and location into a map, using the uuid.
+     */
     private void savePlayerState(Player p) {
-        // PlayerInventory is a pointer to a player's real-time inventory, so we cannot save the data, we need to capture it's pieces.
-        PlayerInventory i = p.getInventory();
-        PlayerState s = new PlayerState(
-            p.getLocation(),
-            i.getContents(),
-            i.getHelmet(),
-            i.getChestplate(),
-            i.getLeggings(),
-            i.getBoots(),
-            i.getItemInOffHand()
+        File f = new File(
+            getDataFolder() + "/players",
+            p.getUniqueId() + ".yml"
         );
+        FileConfiguration c = YamlConfiguration.loadConfiguration(f);
 
-        savedPlayerData.put(p.getUniqueId(), s);
-    }
+        c.set("location", p.getLocation());
+        c.set("gamemode", p.getGameMode().name());
+        c.set("inventory.contents", p.getInventory().getContents());
+        c.set("inventory.armor", p.getInventory().getArmorContents());
+        c.set("inventory.offhand", p.getInventory().getItemInOffHand());
+        c.set("inventory.slot", p.getInventory().getHeldItemSlot());
 
-    private void restorePlayerState(Player p) {
-        PlayerState s = savedPlayerData.get(p.getUniqueId());
-
-        if (s != null) {
-            PlayerInventory i = p.getInventory();
-
-            i.setContents(s.getInventory());
-            i.setHelmet(s.getHelmet());
-            i.setChestplate(s.getChestplate());
-            i.setLeggings(s.getLeggings());
-            i.setBoots(s.getBoots());
-            i.setItemInOffHand(s.getOffHand());
-
-            p.teleport(s.getLocation());
-        } else {
-            p.teleport(overworld.getSpawnLocation());
+        try {
+            c.save(f);
+        } catch (IOException e) {
+            e.printStackTrace();
         }
-
-        p.setGameMode(GameMode.SURVIVAL);
     }
 
+    /**
+     * Restore itmes and location to a player.
+     */
+    private void restorePlayerState(Player p) {
+        File f = new File(
+            getDataFolder() + "/players",
+            p.getUniqueId() + ".yml"
+        );
+        if (!f.exists()) return;
+
+        FileConfiguration c = YamlConfiguration.loadConfiguration(f);
+
+        Location l = c.getLocation("location");
+        GameMode m = GameMode.SURVIVAL;
+
+        ItemStack[] i =
+            ((List<ItemStack>) c.get("inventory.contents")).toArray(
+                    new ItemStack[0]
+                );
+        ItemStack[] a =
+            ((List<ItemStack>) c.get("inventory.armor")).toArray(
+                    new ItemStack[0]
+                );
+        ItemStack o = c.getItemStack("inventory.offhand");
+        int s = c.getInt("inventory.slog", 0);
+
+        p.teleport(l);
+        p.setGameMode(m);
+        p.getInventory().setContents(i);
+        p.getInventory().setArmorContents(a);
+        p.getInventory().setItemInOffHand(o);
+        p.getInventory().setHeldItemSlot(s);
+    }
+
+    /**
+     * Pull each player to the queue world.
+     */
     private void sendToQueueWorld(Player p) {
         p.teleport(queueWorld.getSpawnLocation());
-        p.getInventory().clear();
-        p.setGameMode(GameMode.ADVENTURE);
+        p.getInventory().clear(); // No items in queue world.
+        p.setGameMode(GameMode.ADVENTURE); // Queue world is in adventure mode.
     }
 
+    /**
+     * Create the queue world (not permenant).
+     */
     private void loadOrCreateQueueWorld() {
         WorldCreator c = new WorldCreator("queue_world");
         c.environment(World.Environment.NORMAL);
         c.type(WorldType.FLAT);
         queueWorld = c.createWorld();
-    }
-
-    private static class PlayerState {
-
-        private final Location location;
-        private final ItemStack[] inventory;
-        private final ItemStack helmet;
-        private final ItemStack chestplate;
-        private final ItemStack leggings;
-        private final ItemStack boots;
-        private final ItemStack offHand;
-
-        public PlayerState(
-            Location location,
-            ItemStack[] inventory,
-            ItemStack helmet,
-            ItemStack chestplate,
-            ItemStack leggings,
-            ItemStack boots,
-            ItemStack offHand
-        ) {
-            this.location = location;
-            this.inventory = inventory;
-            this.helmet = helmet;
-            this.chestplate = chestplate;
-            this.leggings = leggings;
-            this.boots = boots;
-            this.offHand = offHand;
-        }
-
-        public Location getLocation() {
-            return location;
-        }
-
-        public ItemStack[] getInventory() {
-            return inventory;
-        }
-
-        public ItemStack getHelmet() {
-            return helmet;
-        }
-
-        public ItemStack getChestplate() {
-            return chestplate;
-        }
-
-        public ItemStack getLeggings() {
-            return leggings;
-        }
-
-        public ItemStack getBoots() {
-            return boots;
-        }
-
-        public ItemStack getOffHand() {
-            return offHand;
-        }
     }
 }

@@ -1,5 +1,5 @@
 name: ReadyUp
-version: "3.0"
+version: "4.0"
 main: dev.velocity71.ReadyUp.Main
 api-version: 1.20
 description: A Minecraft PaperMC plugin that only allows players to enter the world after the player count has reached a number.
